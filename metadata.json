@@ -1,0 +1,6 @@
+{
+  "name": "Hide BG — Studio Background Remover",
+  "description": "Precision background isolation and before/after comparison studio with dark liquid glass interface.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
