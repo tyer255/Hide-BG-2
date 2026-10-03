@@ -1,3 +1,4 @@
+import { removeBackground } from '@imgly/background-removal';
 import { ImageMetadata } from '../types';
 
 export interface ProcessProgressCallback {
@@ -6,7 +7,7 @@ export interface ProcessProgressCallback {
 
 export interface BackgroundProcessorService {
   processFile(
-    file: File, 
+    file: File,
     onProgress?: ProcessProgressCallback,
     options?: { model?: string; alphaMatting?: boolean }
   ): Promise<ImageMetadata>;
@@ -15,75 +16,137 @@ export interface BackgroundProcessorService {
 }
 
 /**
- * Production BackgroundRemover API Client
- * 
- * Uploads user photos to the Express /api/remove-background backend layer
- * which executes U2Net / AI segmentation with sub-pixel alpha matting.
+ * Production-Grade Neural AI Background Removal Processor
+ *
+ * Primary Engine: Client-Side WebAssembly/ONNX Neural Network (@imgly/background-removal)
+ * Secondary Fallback: Server-side Express / Vercel Serverless /api/remove-background endpoint
  */
-class ServerBackgroundProcessor implements BackgroundProcessorService {
+class ProductionBackgroundProcessor implements BackgroundProcessorService {
   async processFile(
-    file: File, 
+    file: File,
     onProgress?: ProcessProgressCallback,
-    options: { model?: string; alphaMatting?: boolean } = {}
+    _options: { model?: string; alphaMatting?: boolean } = {}
   ): Promise<ImageMetadata> {
-    onProgress?.(20, 'Uploading image to BackgroundRemover backend...');
-
-    const formData = new FormData();
-    formData.append('image', file);
-    formData.append('model', options.model || 'u2net');
-    formData.append('alphaMatting', String(options.alphaMatting !== false));
-
-    onProgress?.(45, 'Executing U2Net neural background isolation...');
+    const originalUrl = await this.readFileAsDataUrl(file);
 
     try {
-      const response = await fetch('/api/remove-background', {
-        method: 'POST',
-        body: formData,
+      onProgress?.(15, 'Initializing ONNX neural AI model...');
+
+      // 1. Primary Engine: Run high-accuracy client-side ONNX neural segmentation
+      const cutoutBlob = await removeBackground(file, {
+        progress: (key: string, current: number, total: number) => {
+          if (total > 0) {
+            const pct = Math.min(95, Math.round((current / total) * 100));
+            const msg = key.includes('fetch')
+              ? 'Loading neural segmentation assets...'
+              : 'Isolating subject background with sub-pixel AI...';
+            onProgress?.(pct, msg);
+          }
+        },
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Server returned ${response.status}`);
-      }
+      onProgress?.(98, 'Finalizing transparent alpha matting...');
 
-      onProgress?.(80, 'Refining sub-pixel alpha matting edges...');
+      const cutoutUrl = URL.createObjectURL(cutoutBlob);
+      const dims = await this.getImageDimensions(cutoutUrl);
 
-      const result = await response.json();
-
-      onProgress?.(100, 'Background removal complete');
-
-      // Load dimensions from resulting image
-      const dims = await this.getImageDimensions(result.originalUrl);
+      onProgress?.(100, 'AI background removal complete');
 
       return {
         id: `upload-${Date.now()}`,
         name: file.name.replace(/\.[^/.]+$/, ''),
-        originalUrl: result.originalUrl,
-        cutoutUrl: result.cutoutUrl,
+        originalUrl,
+        cutoutUrl,
         width: dims.width,
         height: dims.height,
-        sizeBytes: result.sizeBytes || file.size,
+        sizeBytes: cutoutBlob.size || file.size,
         format: 'PNG',
         category: 'custom',
       };
-    } catch (err: any) {
-      console.warn('[BackgroundRemover] Backend API error, attempting client fallback:', err);
-      return this.fallbackProcessFile(file, onProgress);
+    } catch (browserError: any) {
+      console.warn('[Hide-BG Engine] Client-side ONNX error, attempting API fallback:', browserError);
+
+      // 2. Secondary Engine: Server / Vercel API fallback
+      try {
+        onProgress?.(50, 'Processing via AI cloud server...');
+        return await this.processFileViaServerApi(file, originalUrl, onProgress);
+      } catch (serverError: any) {
+        console.warn('[Hide-BG Engine] Server API error, attempting canvas fallback:', serverError);
+        return await this.fallbackProcessCanvas(file, originalUrl, onProgress);
+      }
     }
   }
 
-  private getImageDimensions(src: string): Promise<{ width: number; height: number }> {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => resolve({ width: img.naturalWidth || 1200, height: img.naturalHeight || 900 });
-      img.onerror = () => resolve({ width: 1200, height: 900 });
-      img.src = src;
+  private async processFileViaServerApi(
+    file: File,
+    originalUrl: string,
+    onProgress?: ProcessProgressCallback
+  ): Promise<ImageMetadata> {
+    const formData = new FormData();
+    formData.append('image', file);
+
+    const response = await fetch('/api/remove-background', {
+      method: 'POST',
+      body: formData,
     });
+
+    if (!response.ok) {
+      // Try JSON base64 payload as fallback if multipart isn't supported on serverless
+      const base64Str = originalUrl.replace(/^data:image\/[a-z]+;base64,/, '');
+      const jsonResp = await fetch('/api/remove-background', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64Str,
+          mimeType: file.type || 'image/jpeg',
+          filename: file.name,
+        }),
+      });
+
+      if (!jsonResp.ok) {
+        throw new Error(`API returned HTTP ${jsonResp.status}`);
+      }
+
+      const jsonResult = await jsonResp.json();
+      const dims = await this.getImageDimensions(jsonResult.cutoutUrl);
+
+      return {
+        id: `upload-${Date.now()}`,
+        name: file.name.replace(/\.[^/.]+$/, ''),
+        originalUrl: jsonResult.originalUrl || originalUrl,
+        cutoutUrl: jsonResult.cutoutUrl,
+        width: dims.width,
+        height: dims.height,
+        sizeBytes: file.size,
+        format: 'PNG',
+        category: 'custom',
+      };
+    }
+
+    const result = await response.json();
+    const dims = await this.getImageDimensions(result.cutoutUrl);
+
+    onProgress?.(100, 'Background removal complete');
+
+    return {
+      id: `upload-${Date.now()}`,
+      name: file.name.replace(/\.[^/.]+$/, ''),
+      originalUrl: result.originalUrl || originalUrl,
+      cutoutUrl: result.cutoutUrl,
+      width: dims.width,
+      height: dims.height,
+      sizeBytes: result.sizeBytes || file.size,
+      format: 'PNG',
+      category: 'custom',
+    };
   }
 
-  private async fallbackProcessFile(file: File, onProgress?: ProcessProgressCallback): Promise<ImageMetadata> {
+  private async fallbackProcessCanvas(
+    file: File,
+    originalUrl: string,
+    onProgress?: ProcessProgressCallback
+  ): Promise<ImageMetadata> {
     onProgress?.(60, 'Processing local edge isolation...');
-    const originalUrl = await this.readFileAsDataUrl(file);
     const img = await this.loadImage(originalUrl);
     const cutoutUrl = await this.generateCanvasCutout(img);
     onProgress?.(100, 'Processing complete');
@@ -99,6 +162,15 @@ class ServerBackgroundProcessor implements BackgroundProcessorService {
       format: 'PNG',
       category: 'custom',
     };
+  }
+
+  private getImageDimensions(src: string): Promise<{ width: number; height: number }> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.naturalWidth || 1200, height: img.naturalHeight || 900 });
+      img.onerror = () => resolve({ width: 1200, height: 900 });
+      img.src = src;
+    });
   }
 
   private readFileAsDataUrl(file: File): Promise<string> {
@@ -155,7 +227,9 @@ class ServerBackgroundProcessor implements BackgroundProcessorService {
       this.getPixel(data, width - 1, Math.floor(height / 2), width),
     ];
 
-    let avgR = 0, avgG = 0, avgB = 0;
+    let avgR = 0,
+      avgG = 0,
+      avgB = 0;
     samples.forEach((s) => {
       avgR += s.r;
       avgG += s.g;
@@ -210,7 +284,7 @@ class ServerBackgroundProcessor implements BackgroundProcessorService {
     };
   }
 
-  exportPng(dataUrl: string, filename: string = 'clearcut-isolated.png') {
+  exportPng(dataUrl: string, filename: string = 'hide-bg-cutout.png') {
     const link = document.createElement('a');
     link.href = dataUrl;
     link.download = filename.endsWith('.png') ? filename : `${filename}.png`;
@@ -221,7 +295,7 @@ class ServerBackgroundProcessor implements BackgroundProcessorService {
 
   async exportImage(image: ImageMetadata) {
     if (image.cutoutUrl && image.cutoutUrl.startsWith('data:image/png')) {
-      this.exportPng(image.cutoutUrl, `${image.name}-clearcut.png`);
+      this.exportPng(image.cutoutUrl, `${image.name}-hide-bg.png`);
       return;
     }
 
@@ -253,11 +327,11 @@ class ServerBackgroundProcessor implements BackgroundProcessorService {
       }
 
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      this.exportPng(canvas.toDataURL('image/png'), `${image.name}-clearcut.png`);
+      this.exportPng(canvas.toDataURL('image/png'), `${image.name}-hide-bg.png`);
     } catch {
-      this.exportPng(image.originalUrl, `${image.name}-clearcut.png`);
+      this.exportPng(image.originalUrl, `${image.name}-hide-bg.png`);
     }
   }
 }
 
-export const backgroundProcessor: BackgroundProcessorService = new ServerBackgroundProcessor();
+export const backgroundProcessor: BackgroundProcessorService = new ProductionBackgroundProcessor();
