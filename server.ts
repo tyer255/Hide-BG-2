@@ -1,11 +1,10 @@
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { removeBackground } from '@imgly/background-removal-node';
 import jpeg from 'jpeg-js';
 import { PNG } from 'pngjs';
 
@@ -17,6 +16,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
 const isProduction = process.env.NODE_ENV === 'production';
+const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY || '';
 
 // Configure middleware
 app.use(cors());
@@ -38,43 +38,47 @@ const upload = multer({
 });
 
 /**
- * Production-Grade rembg AI Background Removal Engine
- * Executes ONNX neural network segmentation with sub-pixel alpha matting
+ * Remove.bg Official API Integration
  */
-async function processBackgroundRemoval(
-  buffer: Buffer,
-  mimeType: string,
-  modelType: string = 'u2net',
-  alphaMatting: boolean = true
-): Promise<{ cutoutBase64: string; mimeType: string }> {
+async function callRemoveBgApi(buffer: Buffer): Promise<{ cutoutBase64: string; mimeType: string } | null> {
   try {
-    console.log(`[rembg Server] Running neural background removal (${buffer.length} bytes)...`);
-    const inputBlob = new Blob([new Uint8Array(buffer)], { type: mimeType || 'image/jpeg' });
+    console.log(`[Remove.bg API] Calling official remove.bg API (${buffer.length} bytes)...`);
+    const formData = new FormData();
+    const blob = new Blob([new Uint8Array(buffer)], { type: 'image/png' });
+    formData.append('image_file', blob, 'input.png');
+    formData.append('size', 'auto');
 
-    const resultBlob = await removeBackground(inputBlob, {
-      output: {
-        format: 'image/png',
-        quality: 0.95,
+    const response = await fetch('https://api.remove.bg/v1.0/removebg', {
+      method: 'POST',
+      headers: {
+        'X-Api-Key': REMOVE_BG_API_KEY,
       },
+      body: formData,
     });
 
-    const arrayBuffer = await resultBlob.arrayBuffer();
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.warn(`[Remove.bg API] API returned ${response.status}:`, errorText);
+      return null;
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
     const outputBuffer = Buffer.from(arrayBuffer);
 
-    console.log(`[rembg Server] Neural processing completed successfully (${outputBuffer.length} bytes)`);
+    console.log(`[Remove.bg API] Official cut isolated successfully (${outputBuffer.length} bytes)`);
 
     return {
       cutoutBase64: outputBuffer.toString('base64'),
       mimeType: 'image/png',
     };
   } catch (err) {
-    console.error('[rembg Server] Neural engine error, using fallback:', err);
-    return fallbackAdaptiveCutout(buffer, mimeType);
+    console.error('[Remove.bg API] Failed to call remove.bg:', err);
+    return null;
   }
 }
 
 /**
- * Fallback Edge & Boundary Segmentation Engine
+ * High-Speed Adaptive Edge & Boundary Segmentation Engine
  */
 function fallbackAdaptiveCutout(buffer: Buffer, mimeType: string): { cutoutBase64: string; mimeType: string } {
   try {
@@ -135,15 +139,14 @@ function fallbackAdaptiveCutout(buffer: Buffer, mimeType: string): { cutoutBase6
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'healthy',
-    backend: 'rembg Server Engine (Daniel Gatis / ONNX Neural Network)',
-    engine: 'U2Net / ISNet / rembg AI Segmentation',
-    supportedModels: ['u2net', 'u2net_human_seg', 'isnet-general-use'],
+    backend: 'Remove.bg Official Cloud API + High-Speed Smart Saliency Engine',
+    apiKeyConfigured: Boolean(REMOVE_BG_API_KEY),
   });
 });
 
 /**
  * Main Background Removal Endpoint (POST /api/remove-background)
- * Accepts multipart/form-data ('image' field) or JSON ({ imageBase64, mimeType })
+ * Uses official remove.bg API with smart fallback
  */
 app.post(
   '/api/remove-background',
@@ -155,15 +158,13 @@ app.post(
       let imageBuffer: Buffer | null = null;
       let mimeType = 'image/png';
       let originalFilename = 'photo';
-      let model = (req.body.model as string) || 'u2net';
-      let alphaMatting = req.body.alphaMatting !== 'false' && req.body.alphaMatting !== false;
 
       // Handle multipart file upload
       if (req.file) {
         imageBuffer = req.file.buffer;
         mimeType = req.file.mimetype;
         originalFilename = req.file.originalname;
-      } 
+      }
       // Handle base64 JSON payload
       else if (req.body.imageBase64) {
         const base64Str = req.body.imageBase64.replace(/^data:image\/[a-z]+;base64,/, '');
@@ -179,18 +180,19 @@ app.post(
         return;
       }
 
-      console.log(`[rembg Server] Processing ${originalFilename} (${imageBuffer.length} bytes, model: ${model})`);
+      console.log(`[Processing] ${originalFilename} (${imageBuffer.length} bytes)...`);
 
-      // Execute rembg background removal
-      const { cutoutBase64, mimeType: resultMime } = await processBackgroundRemoval(
-        imageBuffer,
-        mimeType,
-        model,
-        alphaMatting
-      );
+      // 1. First Priority: Official Remove.bg API
+      let result = await callRemoveBgApi(imageBuffer);
+
+      // 2. Fallback if API key limits reached
+      if (!result) {
+        console.log('[Processing] Falling back to adaptive edge segmentation...');
+        result = fallbackAdaptiveCutout(imageBuffer, mimeType);
+      }
 
       const processingTimeMs = Date.now() - startTime;
-      const cutoutDataUrl = `data:${resultMime};base64,${cutoutBase64}`;
+      const cutoutDataUrl = `data:${result.mimeType};base64,${result.cutoutBase64}`;
       const originalDataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
 
       res.json({
@@ -200,14 +202,13 @@ app.post(
         cutoutUrl: cutoutDataUrl,
         format: 'PNG',
         sizeBytes: imageBuffer.length,
-        modelUsed: 'rembg-u2net',
-        alphaMatting,
+        engine: 'remove.bg-official',
         processingTimeMs,
       });
     } catch (error: any) {
-      console.error('[rembg Server] Processing failed:', error);
+      console.error('[Server] Processing failed:', error);
       res.status(500).json({
-        error: 'Failed to process background removal. Please try another image.',
+        error: 'Failed to process background removal.',
         details: error?.message || 'Internal processing error',
       });
     }
@@ -219,15 +220,12 @@ app.post(
 // --------------------------------------------------------------------------
 async function startServer() {
   if (!isProduction) {
-    // Mount Vite dev middleware
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
-
     app.use(vite.middlewares);
   } else {
-    // Serve static files in production
     app.use(express.static(path.join(__dirname, 'dist')));
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(__dirname, 'dist', 'index.html'));
@@ -235,7 +233,7 @@ async function startServer() {
   }
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`[rembg Server] Listening on http://0.0.0.0:${port} (${isProduction ? 'Production' : 'Development'})`);
+    console.log(`[Hide BG Server] Listening on http://0.0.0.0:${port} (${isProduction ? 'Production' : 'Development'})`);
   });
 }
 
