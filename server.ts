@@ -16,7 +16,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const port = parseInt(process.env.PORT || '3000', 10);
 const isProduction = process.env.NODE_ENV === 'production';
-const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY || '';
+const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY || '6M23ArmDj9MeTgP6LHkDKDDJ';
 
 // Configure middleware
 app.use(cors());

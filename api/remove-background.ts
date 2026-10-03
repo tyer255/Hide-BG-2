@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import jpeg from 'jpeg-js';
 import { PNG } from 'pngjs';
 
-const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY || '';
+const REMOVE_BG_API_KEY = process.env.REMOVE_BG_API_KEY || '6M23ArmDj9MeTgP6LHkDKDDJ';
 
 export const config = {
   api: {
